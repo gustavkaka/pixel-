@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>16色ドット変換</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#f3f0e8;--fg:#1c1a17;--mut:#6a645a;--card:#fffdf8;--bd:#d6cfc0}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14151a;--fg:#ecebe5;--mut:#a29d92;--card:#1d1f26;--bd:#393c46}}
+:root[data-theme="dark"]{--bg:#14151a;--fg:#ecebe5;--mut:#a29d92;--card:#1d1f26;--bd:#393c46}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.7 system-ui,"Hiragino Sans","Yu Gothic",sans-serif}
+main{max-width:720px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:22px;margin:0 0 4px}
+p{margin:0 0 16px;color:var(--mut);font-size:13px}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:end;margin-bottom:16px}
+label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut)}
+select,input[type=file]{font:inherit;font-size:14px;color:var(--fg);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px;max-width:100%}
+#msg{font-size:13px;color:var(--mut);margin-bottom:12px}
+#out{display:none;width:100%;image-rendering:pixelated;border:1px solid var(--bd);background:var(--card)}
+#pal{margin-top:12px;display:flex;flex-wrap:wrap;gap:4px}
+#pal i{width:28px;height:28px;border:1px solid var(--bd)}
+</style>
+</head>
+<body>
+<main>
+<h1>16色ドット変換</h1>
+<p>写真は外へ送信されません。ブラウザの中だけで処理します。</p>
+<div class="row">
+<label>写真<input type="file" id="f" accept="image/*"></label>
+<label>ドット幅<select id="w"><option value="160">160（粗い）</option><option value="320" selected>320</option><option value="640">640（PC-98）</option></select></label>
+<label>ディザ<select id="d"><option value="bayer">格子（Bayer）</option><option value="fs">誤差拡散</option><option value="none">なし</option></select></label>
+</div>
+<div id="msg">写真を選ぶと変換します。</div>
+<img id="out" alt="変換結果">
+<div id="pal"></div>
+</main>
+<script>
+const $=id=>document.getElementById(id),B=[0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
+let im=null;
+function cut(cols,k){
+ const bx=[cols];
+ while(bx.length<k){
+  let bi=-1,bs=0,bc=0;
+  bx.forEach((b,i)=>{
+   if(b.length<2)return;
+   const mn=[15,15,15],mx=[0,0,0];let t=0;
+   for(const c of b){t+=c.n;[c.r,c.g,c.b].forEach((v,j)=>{if(v<mn[j])mn[j]=v;if(v>mx[j])mx[j]=v})}
+   let ch=0,rg=0;
+   for(let j=0;j<3;j++)if(mx[j]-mn[j]>rg){rg=mx[j]-mn[j];ch=j}
+   const sc=rg*Math.sqrt(t);
+   if(sc>bs){bs=sc;bi=i;bc=ch}
+  });
+  if(bi<0)break;
+  const b=bx[bi],key='rgb'[bc];
+  b.sort((x,y)=>x[key]-y[key]);
+  let t=0;for(const c of b)t+=c.n;
+  let a=0,s=1;
+  for(let i=0;i<b.length-1;i++){a+=b[i].n;s=i+1;if(a>=t/2)break}
+  bx.splice(bi,1,b.slice(0,s),b.slice(s));
+ }
+ return bx.map(b=>{let t=0,r=0,g=0,l=0;for(const c of b){t+=c.n;r+=c.r*c.n;g+=c.g*c.n;l+=c.b*c.n}return[Math.round(r/t)*17,Math.round(g/t)*17,Math.round(l/t)*17]});
+}
+function run(){
+ if(!im)return;
+ const W=+$('w').value,H=Math.round(W*.625),s=Math.min(W/im.width,H/im.height);
+ const w=Math.max(1,Math.round(im.width*s)),h=Math.max(1,Math.round(im.height*s));
+ const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+ const cx=cv.getContext('2d');
+ cx.fillStyle='#fff';cx.fillRect(0,0,w,h);
+ cx.imageSmoothingQuality='high';cx.drawImage(im,0,0,w,h);
+ const d=cx.getImageData(0,0,w,h),p=d.data,n=w*h,hist=new Uint32Array(4096);
+ for(let i=0;i<n;i++)hist[(p[i*4]>>4)<<8|(p[i*4+1]>>4)<<4|p[i*4+2]>>4]++;
+ const cols=[];
+ for(let i=0;i<4096;i++)if(hist[i])cols.push({r:i>>8,g:(i>>4)&15,b:i&15,n:hist[i]});
+ const pal=cut(cols,16);
+ const near=(r,g,b)=>{let k=0,m=1e9;for(let i=0;i<pal.length;i++){const q=pal[i],x=r-q[0],y=g-q[1],z=b-q[2],e=x*x*.3+y*y*.59+z*z*.11;if(e<m){m=e;k=i}}return k};
+ const mode=$('d').value,ix=new Uint8Array(n);
+ if(mode==='fs'){
+  const f=new Float32Array(n*3),e=[0,0,0];
+  for(let i=0;i<n;i++){f[i*3]=p[i*4];f[i*3+1]=p[i*4+1];f[i*3+2]=p[i*4+2]}
+  const sp=(x,y,a)=>{if(x<0||x>=w||y>=h)return;const j=(y*w+x)*3;f[j]+=e[0]*a;f[j+1]+=e[1]*a;f[j+2]+=e[2]*a};
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+   const i=y*w+x,k=near(f[i*3],f[i*3+1],f[i*3+2]),q=pal[k];
+   ix[i]=k;e[0]=f[i*3]-q[0];e[1]=f[i*3+1]-q[1];e[2]=f[i*3+2]-q[2];
+   sp(x+1,y,7/16);sp(x-1,y+1,3/16);sp(x,y+1,5/16);sp(x+1,y+1,1/16);
+  }
+ }else for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+  const i=y*w+x,o=mode==='bayer'?(B[(y&3)*4+(x&3)]/16-.47)*64:0;
+  ix[i]=near(p[i*4]+o,p[i*4+1]+o,p[i*4+2]+o);
+ }
+ for(let i=0;i<n;i++){const q=pal[ix[i]];p[i*4]=q[0];p[i*4+1]=q[1];p[i*4+2]=q[2];p[i*4+3]=255}
+ cx.putImageData(d,0,0);
+ const sc=Math.max(1,Math.round(640/w)),u=document.createElement('canvas');
+ u.width=w*sc;u.height=h*sc;
+ const ux=u.getContext('2d');ux.imageSmoothingEnabled=false;ux.drawImage(cv,0,0,w*sc,h*sc);
+ const out=$('out');out.src=u.toDataURL('image/png');out.style.display='block';out.style.maxWidth=u.width+'px';
+ $('pal').innerHTML=pal.map(c=>`<i style="background:rgb(${c})"></i>`).join('');
+ $('msg').textContent=`${w}×${h}ドット／${pal.length}色。画像を長押し（右クリック）で保存できます。`;
+}
+$('f').onchange=e=>{const f=e.target.files[0];if(!f)return;const i=new Image();i.onload=()=>{im=i;run()};i.src=URL.createObjectURL(f)};
+$('w').onchange=$('d').onchange=run;
+</script>
+</body>
+</html>
